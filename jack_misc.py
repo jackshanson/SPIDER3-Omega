@@ -24,6 +24,12 @@ def read_spd33(fname,seq):
         raise ValueError('HHM file is in wrong format or incorrect!')
     return spd3_features
 
+def tee(fname,in_str,append=False):
+    fperm = 'a' if append==True else 'w'
+    with open(fname,fperm) as f:
+        print(in_str),  
+        f.write(in_str)
+
 #-------------------------------------------------------------------------------
 #
 #       MODEL FUNCTIONS

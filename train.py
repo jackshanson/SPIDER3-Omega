@@ -8,7 +8,7 @@ parser.add_argument('--small', default=False, type=bool, help='Whether or not to
 parser.add_argument('--gpu', default=0, type=int, help='Which GPU to use on the machine')
 parser.add_argument('--type', default='ALL', type=str, help='Type of test to run ("ALL","PRO","NOPRO"')
 parser.add_argument('--model_res', default=True, type=bool, help='If model is residual or not')
-parser.add_argument('--model_type', default="CNN", type=str, help='RNN, CNN, or BOTH')
+parser.add_argument('--layout', default="CNN", type=str, help='RNN, CNN, or "CNN RNN" etc')
 parser.add_argument('--gain', default=100, type=int, help='Loss scaling factor')
 parser.add_argument('--RNN_size', default=128, type=int, help='Size of the RNN layer')
 parser.add_argument('--CNN_size', default=64, type=int, help='Size of the CNN layer')
@@ -16,7 +16,10 @@ parser.add_argument('--RNN_depth', default=2, type=int, help='Number of RNN laye
 parser.add_argument('--CNN_depth', default=20, type=int, help='Number of CNN layers')
 parser.add_argument('--FC_size', default=128, type=int, help='Size of the CNN layers')
 parser.add_argument('--FC_depth', default=2, type=int, help='Number of FC layers')
+parser.add_argument('--activation', default='ELU', type=str, help='Activation function ("ELU","ReLU")')
 parser.add_argument('--bottleneck', default=False, type=bool, help='Bottleneck in LSTM layers')
+parser.add_argument('--filter_dims', default="3", type=str, help='Pattern for filter kx1 dimensions')
+parser.add_argument('--save', default=True, type=bool, help='Whether or not to save this model')
 args = parser.parse_args()
 
 AA = 'GALMFWKQESPVICYHRNDT'
@@ -51,41 +54,44 @@ def Model(input,seq_lens,mask,dropout,num_outputs,args):
     fc_size = args.FC_size
     fc_depth = args.FC_depth
     cellfunc = tf.contrib.rnn.BasicLSTMCell
-    activation_fn = tf.nn.elu
+    activation_fn = tf.nn.elu if args.activation == "ELU" else tf.nn.relu
     cell_args = {} 
     cell_args.update({'forget_bias': 1.0})
     layer = [input]
-    #-------------------RNN    
-    if args.model_type == 'RNN' or args.model_type == 'BOTH':
-        for i in range(rnn_depth):
-            with tf.variable_scope('RNN'+str(i)):
-                if args.model_res == True:
-                    res_start_layer = len(layer)-1
-                if args.model_res == True and args.bottleneck == True:
-                    with tf.variable_scope('bottleneck'+str(i)):
-                        layer.append(tf.layers.conv1d(layer[-1],rnn_size,1,padding='SAME',activation=activation_fn))
+    model_layout = args.layout.split()
+    for k in model_layout:
+        #-------------------RNN    
+        if k == 'RNN':
+            for i in range(rnn_depth):
+                with tf.variable_scope('RNN'+str(i)):
+                    if args.model_res == True:
+                        res_start_layer = len(layer)-1
+                    if args.model_res == True and args.bottleneck == True:
+                        with tf.variable_scope('bottleneck'+str(i)):
+                            layer.append(tf.layers.conv1d(layer[-1],rnn_size,1,padding='SAME',activation=activation_fn))
+                            layer.append(tf.contrib.layers.layer_norm(layer[-1]))
+                    layer.append(jack.LSTM_layer(layer[-1],cellfunc,cell_args,rnn_size,seq_lens,False))
+                    if args.model_res == True:
                         layer.append(tf.contrib.layers.layer_norm(layer[-1]))
-                layer.append(jack.LSTM_layer(layer[-1],cellfunc,cell_args,rnn_size,seq_lens,False))
-                if args.model_res == True:
-                    layer.append(tf.contrib.layers.layer_norm(layer[-1]))
-                else:
-                    layer.append(tf.nn.dropout(tf.contrib.layers.layer_norm(layer[-1]),dropout))
-                if args.model_res == True and i!=0:
-                    layer.append(layer[-1]+layer[res_start_layer])
-    #-------------------CNN 
-    if args.model_type == 'CNN' or args.model_type == 'BOTH':
-        with tf.variable_scope('initCNN'):
-            layer.append(tf.layers.conv1d(layer[-1],cnn_size,3,padding='SAME',activation=tf.identity))
-        for i in range(cnn_depth-1):
-            if args.model_res == True and i%2 == 0:
-                res_start_layer = len(layer)-1
-            with tf.variable_scope('CNN'+str(i)):
-                layer.append(tf.contrib.layers.layer_norm(activation_fn(layer[-1])))
-                cnn_dim = 3 #if i%2==0 else 5
-                layer.append(tf.layers.conv1d(layer[-1],cnn_size,cnn_dim,padding='SAME',activation=tf.identity))
-                if i%2 == 1 and args.model_res:
-                    layer.append(layer[-1]+layer[res_start_layer])
-        layer.append(tf.contrib.layers.layer_norm(activation_fn(layer[-1])))
+                    else:
+                        layer.append(tf.nn.dropout(tf.contrib.layers.layer_norm(layer[-1]),dropout))
+                    if args.model_res == True and i!=0:
+                        layer.append(layer[-1]+layer[res_start_layer])
+        #-------------------CNN 
+        elif k == 'CNN':
+            filter_dims_pattern = [int(l) for l in args.filter_dims.split()]
+            with tf.variable_scope('initCNN'):
+                layer.append(tf.layers.conv1d(layer[-1],cnn_size,filter_dims_pattern[0],padding='SAME',activation=tf.identity))
+            for i in range(cnn_depth-1):
+                if args.model_res == True and i%2 == 0:
+                    res_start_layer = len(layer)-1
+                with tf.variable_scope('CNN'+str(i)):
+                    layer.append(tf.contrib.layers.layer_norm(activation_fn(layer[-1])))
+                    cnn_dim = filter_dims_pattern[i%(len(filter_dims_pattern))]
+                    layer.append(tf.layers.conv1d(layer[-1],cnn_size,cnn_dim,padding='SAME',activation=tf.identity))
+                    if i%2 == 1 and args.model_res:
+                        layer.append(layer[-1]+layer[res_start_layer])
+            layer.append(tf.contrib.layers.layer_norm(activation_fn(layer[-1])))
     #-------------------MASK
     layer.append(tf.boolean_mask(layer[-1],mask))
     #-------------------FC
@@ -145,7 +151,7 @@ def test_func(sess,ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,threshold
     return running_cost,AUC,Sw,MCC,Q2
 
 
-def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experiment,num_outputs,num_1D_feats):
+def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experiment,num_outputs,num_1D_feats,fpath):
     ph_x = tf.placeholder(tf.float32,[None,None,num_1D_feats],name='oneD_feats')
     ph_seq_lens = tf.placeholder(tf.int32,[None],name='seq_lens')
     ph_dropout = tf.placeholder(tf.float32,name='ph_dropout')
@@ -154,6 +160,7 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
     model = Model(ph_x,ph_seq_lens,ph_mask,ph_dropout,num_outputs,args)
     cost = tf.reduce_mean(tf.nn.weighted_cross_entropy_with_logits(tf.boolean_mask(ph_y,ph_mask),model[-1],args.gain))
     opt = tf.contrib.layers.optimize_loss(cost, None,0.01,optimizer='Adam')
+    saver = tf.train.Saver() 
 
     init = tf.global_variables_initializer()
     config = tf.ConfigProto()
@@ -242,6 +249,9 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
                 print(jack.bcolors.RED+'Validation AUC has not increased (%f from epoch %i)'%(np.max(val_AUC_save),np.argmax(val_AUC_save)+1)+jack.bcolors.RESET)
             else:
                 print(jack.bcolors.GREEN+'Validation AUC increased!'+jack.bcolors.RESET)
+                if args.save == True:
+                    print(jack.bcolors.GREEN+'Saving in '+fpath+'/model_'+experiment+'.net'+jack.bcolors.RESET)
+                    saver.save(sess, fpath+'/model_'+experiment+'.net')
 
 
             print('Testing on ALL...')
@@ -326,16 +336,27 @@ norm_std = np.std(all_train_data,0)
 num_1D_feats = all_train_data.shape[1]
 num_outputs = 1
 
-all_res = train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,'ALL',num_outputs,num_1D_feats)
-pro_res = train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,'PRO',num_outputs,num_1D_feats)
+exists_flag = True
+model_id = -1
+while exists_flag:
+    model_id += 1
+    fpath = "save_files/model_"+str(model_id)
+    exists_flag = os.path.isdir(fpath)
+os.makedirs(fpath)
+
+all_res = train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,'ALL',num_outputs,num_1D_feats,fpath)
+pro_res = train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,'PRO',num_outputs,num_1D_feats,fpath)
 #nopro_res = train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,'NOPRO',num_outputs,num_1D_feats)
-print('All residues:')
-print('%i\t%f\t%1.2f\t%f\t%f\t%f'%tuple(all_res))
-print('Only Proline:')
-print('%i\t%f\t%1.2f\t%f\t%f\t%f'%tuple(pro_res))
-#print('No Proline:')
-#print('%i\t%f\t%1.2f\t%f\t%f\t%f'%tuple(nopro_res))
-print args
+print(jack.bcolors.BOLD+'\n\nFINAL RESULTS:\n'+jack.bcolors.RESET)
+jack.tee(fpath+'/results_log.txt','All residues:\n',append=False)
+jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.2f\t%f\t%f\t%f\n'%tuple(all_res),append=True)
+jack.tee(fpath+'/results_log.txt','Only Proline:\n',append=True)
+jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.2f\t%f\t%f\t%f\n'%tuple(pro_res),append=True)
+#jack.tee(fpath+'/results_log.txt','No Proline:',append=True)
+#jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.2f\t%f\t%f\t%f'%tuple(nopro_res),append=True)
+for arg in vars(args):
+    jack.tee(fpath+'/args.txt',"%s:\t%s\n"%(arg,getattr(args,arg)),append=(I!=0))
+
 
 
 
