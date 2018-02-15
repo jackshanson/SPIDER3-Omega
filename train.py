@@ -20,6 +20,9 @@ parser.add_argument('--activation', default='ELU', type=str, help='Activation fu
 parser.add_argument('--bottleneck', default=False, type=bool, help='Bottleneck in LSTM layers')
 parser.add_argument('--filter_dims', default="3", type=str, help='Pattern for filter kx1 dimensions')
 parser.add_argument('--save', default=True, type=bool, help='Whether or not to save this model')
+parser.add_argument('--norm_func', default="layer", type=str, help='Which normalisation function to use: layer, batch, none')
+parser.add_argument('--batch_size', default=50, type=int, help='Batch size')
+parser.add_argument('--bn_momentum', default=0.99, type=float, help='Batch norm momentum')
 args = parser.parse_args()
 AA = 'GALMFWKQESPVICYHRNDT'
 
@@ -44,7 +47,7 @@ def read_rhys_omega(fname):
         omega = pd.read_csv(f).values
     return omega
 
-def Model(input,seq_lens,mask,dropout,num_outputs,args):
+def Model(input,seq_lens,mask,dropout,num_outputs,is_train,args):
     #-------------------Model Params
     cnn_size = args.CNN_size
     cnn_depth = args.CNN_depth
@@ -53,10 +56,18 @@ def Model(input,seq_lens,mask,dropout,num_outputs,args):
     fc_size = args.FC_size
     fc_depth = args.FC_depth
     cellfunc = tf.contrib.rnn.BasicLSTMCell
-    activation_fn = tf.nn.elu if args.activation == "ELU" else tf.nn.relu
+    activation_fn = tf.nn.relu if args.activation.lower() == "relu" else tf.nn.elu
     cell_args = {} 
     cell_args.update({'forget_bias': 1.0})
     layer = [input]
+    norm_args = {}
+    if args.norm_func.lower() == 'batch':
+        norm_func = tf.layers.batch_normalization
+        norm_args.update({'training':is_train,'momentum':args.bn_momentum})
+    elif args.norm_func.lower() == 'layer':
+        norm_func = tf.contrib.layers.layer_norm
+    else:
+        norm_func = tf.identity
     model_layout = args.layout.split()
     for k in model_layout:
         #-------------------RNN    
@@ -68,29 +79,29 @@ def Model(input,seq_lens,mask,dropout,num_outputs,args):
                     if args.model_res == True and args.bottleneck == True:
                         with tf.variable_scope('bottleneck'+str(i)):
                             layer.append(tf.layers.conv1d(layer[-1],rnn_size,1,padding='SAME',activation=activation_fn))
-                            layer.append(tf.contrib.layers.layer_norm(layer[-1]))
+                            layer.append(norm_func(layer[-1],**norm_args))
                     layer.append(jack.LSTM_layer(layer[-1],cellfunc,cell_args,rnn_size,seq_lens,False))
                     if args.model_res == True:
-                        layer.append(tf.contrib.layers.layer_norm(layer[-1]))
+                        layer.append(norm_func(layer[-1],**norm_args))
                     else:
-                        layer.append(tf.nn.dropout(tf.contrib.layers.layer_norm(layer[-1]),dropout))
+                        layer.append(tf.nn.dropout(norm_func(layer[-1],**norm_args),dropout))
                     if args.model_res == True and i!=0:
                         layer.append(layer[-1]+layer[res_start_layer])
         #-------------------CNN 
         elif k == 'CNN':
             filter_dims_pattern = [int(l) for l in args.filter_dims.split()]
             with tf.variable_scope('initCNN'):
-                layer.append(tf.layers.conv1d(layer[-1],cnn_size,filter_dims_pattern[0],padding='SAME',activation=tf.identity))
+                layer.append(tf.layers.conv1d(layer[-1],cnn_size,filter_dims_pattern[0],padding='SAME',activation=None,bias_initializer=tf.constant_initializer(0.01)))
             for i in range(cnn_depth-1):
                 if args.model_res == True and i%2 == 0:
                     res_start_layer = len(layer)-1
-                with tf.variable_scope('CNN'+str(i)):
-                    layer.append(tf.contrib.layers.layer_norm(activation_fn(layer[-1])))
+                with tf.variable_scope('CNN'+str(i+1)):
+                    layer.append(norm_func(activation_fn(layer[-1]),**norm_args))
                     cnn_dim = filter_dims_pattern[i%(len(filter_dims_pattern))]
-                    layer.append(tf.layers.conv1d(layer[-1],cnn_size,cnn_dim,padding='SAME',activation=tf.identity))
+                    layer.append(tf.layers.conv1d(layer[-1],cnn_size,cnn_dim,padding='SAME',activation=None,bias_initializer=tf.constant_initializer(0.01)))
                     if i%2 == 1 and args.model_res:
                         layer.append(layer[-1]+layer[res_start_layer])
-            layer.append(tf.contrib.layers.layer_norm(activation_fn(layer[-1])))
+            layer.append(norm_func(activation_fn(layer[-1]),**norm_args))
     #-------------------MASK
     layer.append(tf.boolean_mask(layer[-1],mask))
     #-------------------FC
@@ -101,8 +112,9 @@ def Model(input,seq_lens,mask,dropout,num_outputs,args):
     with tf.variable_scope('Output'):
         layer.append(jack.FC_layer(layer[-1],num_outputs,1,activation_fn=tf.identity))
     #-------------------SUMMARY    
-    for i in layer:
+    for I,i in enumerate(layer):
         print i.get_shape().as_list(),
+        print("%i:"%(I)),
         print str(i.name)
     return layer
     
@@ -130,7 +142,7 @@ def test_func(sess,ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,threshold
         elif experiment == 'NOPRO':
             seq_mask = np.concatenate([np.concatenate([feat_dic[j][0][None,:]!='P',np.zeros([1,np.max(seq_lens)-feat_dic[j][0].shape[0]])==0],1) for j in ids[i*batch_size:np.min([(i+1)*batch_size,len(ids)])]]) #nonproline only
             mask = np.logical_and(seq_mask,mask)
-        feed_dict = {'oneD_feats:0':data,'seq_lens:0':seq_lens,'ph_dropout:0':1,'mask_bool:0':mask,'output:0':labels}
+        feed_dict = {'oneD_feats:0':data,'seq_lens:0':seq_lens,'ph_dropout:0':1,'mask_bool:0':mask,'output:0':labels,'train_bool:0':False}
         [tmp_cost,tmp_out] = sess.run([cost,model],feed_dict=feed_dict)
         running_cost += np.sum(tmp_cost)
         outputs = jack.sigmoid(tmp_out[-1])
@@ -156,9 +168,12 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
     ph_dropout = tf.placeholder(tf.float32,name='ph_dropout')
     ph_mask = tf.placeholder(tf.bool,[None,None], name='mask_bool')
     ph_y = tf.placeholder(tf.float32,[None,None,num_outputs],name='output')
-    model = Model(ph_x,ph_seq_lens,ph_mask,ph_dropout,num_outputs,args)
+    ph_train_bool = tf.placeholder(tf.bool,name='train_bool')
+    model = Model(ph_x,ph_seq_lens,ph_mask,ph_dropout,num_outputs,ph_train_bool,args)
     cost = tf.reduce_mean(tf.nn.weighted_cross_entropy_with_logits(tf.boolean_mask(ph_y,ph_mask),model[-1],args.gain))
-    opt = tf.contrib.layers.optimize_loss(cost, None,0.01,optimizer='Adam')
+    update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+    with tf.control_dependencies(update_ops):
+        opt = tf.contrib.layers.optimize_loss(cost, None,0.01,optimizer='Adam')
 
     if args.save == True:    
         saver = tf.train.Saver() 
@@ -170,7 +185,7 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
     config.log_device_placement=False
     with tf.Session(config=config) as sess:
         sess.run(init)
-        batch_size = 50
+        batch_size = args.batch_size
         np.random.shuffle(train_ids)
         train_bool = True
         train_AUC_save = []
@@ -197,7 +212,7 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
 
         test_thresh_save = [[] for i in test_ids]
         e=1
-        step = 0.01
+        step = 0.001
         thresholds = np.arange(0,1+step,step)[None,:]
         while train_bool == True:
             train_cost = 0
@@ -210,7 +225,7 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
                 elif experiment == 'NOPRO':
                     training_mask = np.concatenate([np.concatenate([feat_dic[j][0][None,:]!='P',np.zeros([1,np.max(seq_lens)-feat_dic[j][0].shape[0]])==0],1) for j in train_ids[i*batch_size:np.min([(i+1)*batch_size,len(train_ids)])]]) #proline only
                     mask = np.logical_and(training_mask,mask)
-                feed_dict = {'oneD_feats:0':train_data,'seq_lens:0':seq_lens,'ph_dropout:0':0.5,'mask_bool:0':mask,'output:0':train_labels}
+                feed_dict = {'oneD_feats:0':train_data,'seq_lens:0':seq_lens,'ph_dropout:0':0.5,'mask_bool:0':mask,'output:0':train_labels,'train_bool:0':True}
                 [_,tmp_cost,_] = sess.run([opt,cost,model],feed_dict=feed_dict)
                 train_cost += np.sum(tmp_cost)
             print('Training cost = %f'%(train_cost))
@@ -294,7 +309,7 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
 
                 print('Best validation epoch results on test data:')
                 print('Epoch:\tAUC:\tT:\tSw(T):\tQ2(T):\tMCC(T):\tSens(T):\tSpec(T):')
-                print('%i\t%1.4f\t%1.2f\t%1.4f\t%1.4f\t%1.4f\t%1.4f\t\t%1.4f'%(max_val_epoch+1,test_AUC_save[K][max_val_epoch],test_thresh_save[K][max_val_epoch],test_Sw_save[K][max_val_epoch],test_Q2_save[K][max_val_epoch],test_MCC_save[K][max_val_epoch],test_sens_save[K][max_val_epoch],test_spec_save[K][max_val_epoch]))
+                print('%i\t%1.4f\t%1.3f\t%1.4f\t%1.4f\t%1.4f\t%1.4f\t\t%1.4f'%(max_val_epoch+1,test_AUC_save[K][max_val_epoch],test_thresh_save[K][max_val_epoch],test_Sw_save[K][max_val_epoch],test_Q2_save[K][max_val_epoch],test_MCC_save[K][max_val_epoch],test_sens_save[K][max_val_epoch],test_spec_save[K][max_val_epoch]))
 
             if max_val_epoch < e-5:
                 print('Stopping training')
@@ -318,8 +333,8 @@ with open('/home/jack/Documents/Databases/'+data_dir+'Contact_Map/dat/spot-conta
     e01_ids = f.read().splitlines()
 
 
-
-wtf_rhys = '/home/rhys/work/tensorflow_code/experiments/github_brnn/experiment_dir/tf-bioinf-brnn/spider3/iteration3-pssm_phys7_hmm30_asa_ttpp_hsea_hseb_cn/160817-19:05:52/results'
+#wtf_rhys +/home/rhys/work/tensorflow_code/experiments/github_brnn/experiment_dir/tf-bioinf-brnn/spider3/iteration3-pssm_phys7_hmm30_asa_ttpp_hsea_hseb_cn/160817-19:05:52/results
+wtf_rhys = './spd3_outputs'
 
 old_train = sio.loadmat('/home/rhys/work/Databases/ourdatabase/combined_train.mat')['combined'][0]
 old_test = sio.loadmat('/home/rhys/work/Databases/ourdatabase/combined_test.mat')['combined'][0]
@@ -348,11 +363,11 @@ for I,i in enumerate(tqdm.tqdm(all_ids,file=sys.stdout)):
         index = old_ids.index(i)
         seq = old_db['aa'][index]
         feat_dic[i] = [seq]
-        feats = np.concatenate([old_db[j][index].astype(float) if j!='spd33' else jack.read_spd33_features(wtf_rhys+'/'+i+'.spd3',seq) for j in features],1)
+        feats = np.concatenate([old_db[j][index].astype(float) if j!='spd33' else jack.read_spd33_features(wtf_rhys+'/class/'+i+'.spd3',wtf_rhys+'/reg/'+i+'.spd3',seq) for j in features],1)
         feats[np.isinf(feats)] = 9999 #only HHM, surely...?
         feat_dic[i].append(feats)
         omega_raw = old_db['omega_raw'][index]
-        #---------------------------------------------------------------------------
+    #---------------------------------------------------------------------------
     else:
         try:
             seq, omega_raw = jack.read_omega_file(database_dir+i+'/'+i+'.omegalab')
@@ -370,7 +385,6 @@ for I,i in enumerate(tqdm.tqdm(all_ids,file=sys.stdout)):
                     feat=jack.read_spd33_output(database_dir+i+'/'+i+'.spd33',seq)
                 feats.append(feat)
             feat_dic[i].append(np.concatenate(feats,1))
-        #---------------------------------------------------------------------------
         except:
             try:
                 del feat_dic[i]
@@ -378,6 +392,7 @@ for I,i in enumerate(tqdm.tqdm(all_ids,file=sys.stdout)):
                 pass
             bad_prots.append(i)
             continue
+    #---------------------------------------------------------------------------
     omega_raw[np.isnan(omega_raw)] = 360
     omega_labels = np.ones(omega_raw.shape)*-1    
     omega_labels[np.abs(omega_raw)<30] = 1
@@ -443,9 +458,9 @@ print(jack.bcolors.BOLD+'\n\nFINAL RESULTS:\n'+jack.bcolors.RESET)
 for K,k in enumerate([test_ids,e01_ids]):
     jack.tee(fpath+'/results_log.txt','python %s\n'%(' '.join(sys.argv)),append=True)
     jack.tee(fpath+'/results_log.txt','All residues:\n',append=True)
-    jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.2f\t%f\t%f\t%f\t%f\t%f\n'%tuple(all_res[K]),append=True)
+    jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.3f\t%f\t%f\t%f\t%f\t%f\n'%tuple(all_res[K]),append=True)
     jack.tee(fpath+'/results_log.txt','Only Proline:\n',append=True)
-    jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.2f\t%f\t%f\t%f\t%f\t%f\n'%tuple(pro_res[K]),append=True)
+    jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.3f\t%f\t%f\t%f\t%f\t%f\n'%tuple(pro_res[K]),append=True)
 #jack.tee(fpath+'/results_log.txt','No Proline:',append=True)
 #jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.2f\t%f\t%f\t%f'%tuple(nopro_res),append=True)
 for arg in vars(args):

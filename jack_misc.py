@@ -71,9 +71,15 @@ def read_spd33_output(fname,seq):
         raise ValueError('Spider3 file is in wrong format or incorrect!')
     return tmp_spd3
 
-def read_spd33_features(fname,seq):
-    with open(fname,'r') as f:
-        spd3_features = pd.read_csv(f,delim_whitespace=True,header=None,skiprows=1).values.astype(float)
+def read_spd33_features(fnameclass,fnamereg,seq):
+    with open(fnameclass,'r') as f:
+        spd3_class = pd.read_csv(f,delim_whitespace=True,header=None,skiprows=1).values.astype(float)
+    with open(fnamereg,'r') as f:
+        spd3_reg = pd.read_csv(f,delim_whitespace=True,header=None,skiprows=1).values.astype(float)[:,:-3]
+    spd3_reg[:,1:9] = spd3_reg[:,1:9]*2-1 #convert sigmoided outputs to sin/cos outputs
+    spd3_reg[:,9] *= 50 
+    spd3_reg[:,10] *= 65 
+    spd3_features = np.concatenate([spd3_class,spd3_reg],1)
     if spd3_features.shape[0] != len(seq):
         raise ValueError('Spider3 file is in wrong format or incorrect!')
     return spd3_features
