@@ -294,7 +294,7 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
 
                 print('Best validation epoch results on test data:')
                 print('Epoch:\tAUC:\tT:\tSw(T):\tQ2(T):\tMCC(T):\tSens(T):\tSpec(T):')
-                print('%i\t\t%f\t%1.2f\t%f\t%f\t%f\t%f\t\t%f'%(max_val_epoch+1,test_AUC_save[K][max_val_epoch],test_thresh_save[K][max_val_epoch],test_Sw_save[K][max_val_epoch],test_Q2_save[K][max_val_epoch],test_MCC_save[K][max_val_epoch],test_sens_save[K][max_val_epoch],test_spec_save[K][max_val_epoch]))
+                print('%i\t%1.4f\t%1.2f\t%1.4f\t%1.4f\t%1.4f\t%1.4f\t\t%1.4f'%(max_val_epoch+1,test_AUC_save[K][max_val_epoch],test_thresh_save[K][max_val_epoch],test_Sw_save[K][max_val_epoch],test_Q2_save[K][max_val_epoch],test_MCC_save[K][max_val_epoch],test_sens_save[K][max_val_epoch],test_spec_save[K][max_val_epoch]))
 
             if max_val_epoch < e-5:
                 print('Stopping training')
