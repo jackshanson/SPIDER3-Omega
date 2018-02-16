@@ -48,14 +48,17 @@ def read_hhm(fname,seq):
         raise ValueError('HHM file is in wrong format or incorrect!')
     return hhm[:,2:-12].astype(float)    
 
-def spd3_feature_sincos(x,seq):
+def spd3_feature_sincos(x,seq,norm_ASA=True):
     ASA = x[:,0]
-    rnam1_std = "ACDEFGHIKLMNPQRSTVWY-"
-    ASA_std = (115, 135, 150, 190, 210, 75, 195, 175, 200, 170,
-                        185, 160, 145, 180, 225, 115, 140, 155, 255, 230,1)
-    dict_rnam1_ASA = dict(zip(rnam1_std, ASA_std))
-    ASA_div =  np.array([dict_rnam1_ASA[i] for i in seq])
-    ASA = (ASA/ASA_div)[:,None]
+    if norm_ASA==True:
+        rnam1_std = "ACDEFGHIKLMNPQRSTVWY-"
+        ASA_std = (115, 135, 150, 190, 210, 75, 195, 175, 200, 170,
+                            185, 160, 145, 180, 225, 115, 140, 155, 255, 230,1)
+        dict_rnam1_ASA = dict(zip(rnam1_std, ASA_std))
+        ASA_div =  np.array([dict_rnam1_ASA[i] for i in seq])
+        ASA = (ASA/ASA_div)[:,None]
+    else:
+        ASA = ASA[:,None]
     angles = x[:,1:5]
     HSEa = x[:,5:7]
     HCEprob = x[:,7:10]
@@ -67,6 +70,14 @@ def read_spd33_output(fname,seq):
     with open(fname,'r') as f:
         spd3_features = pd.read_csv(f,delim_whitespace=True).values[:,3:].astype(float)
     tmp_spd3 = spd3_feature_sincos(spd3_features,seq)
+    if tmp_spd3.shape[0] != len(seq):
+        raise ValueError('Spider3 file is in wrong format or incorrect!')
+    return tmp_spd3
+
+def read_spd33_third_iteration(fname,seq):
+    with open(fname,'r') as f:
+        spd3_features = pd.read_csv(f,delim_whitespace=True,skiprows=1,header=None).values[:,1:].astype(float)
+    tmp_spd3 = spd3_feature_sincos(spd3_features,seq,norm_ASA=False)
     if tmp_spd3.shape[0] != len(seq):
         raise ValueError('Spider3 file is in wrong format or incorrect!')
     return tmp_spd3

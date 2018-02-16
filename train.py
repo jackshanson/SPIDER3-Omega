@@ -161,6 +161,35 @@ def test_func(sess,ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,threshold
     Q2 = (tp+tn)/(tp+tn+fn+fp)
     return running_cost,AUC,Sw,MCC,Q2,sens,spec
 
+def test_iter(sess,ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,metrics,K=0,name=''):
+    name = 'Test' if name == '' else name
+    print(jack.bcolors.BOLD+name+' set:'+jack.bcolors.RESET)
+    tmp_cost,tmp_AUC,tmp_Sw,tmp_MCC,_,tmp_sens,tmp_spec = test_func(sess,ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment)
+    print(name+' AUC = %f'%(tmp_AUC))
+    max_Sw_pos = np.argmax(tmp_Sw)
+    max_Sw = tmp_Sw[max_Sw_pos]
+    max_Sw_thresh = thresholds[0,max_Sw_pos]
+    max_MCC_pos = np.nanargmax(tmp_MCC)
+    max_MCC = tmp_MCC[max_MCC_pos]
+    max_MCC_thresh = thresholds[0,max_MCC_pos]
+    print(name+' max Sw = %f, at a threshold of %f'%(max_Sw,max_Sw_thresh))
+    print(name+' max MCC = %f, at a threshold of %f'%(max_MCC,max_MCC_thresh))
+    metrics['AUC'][K].append(tmp_AUC)
+    metrics['cost'][K].append(tmp_cost)
+    metrics['Sw'][K].append(tmp_Sw[max_Sw_pos])
+    metrics['sens'][K][0].append(tmp_sens[max_Sw_pos])
+    metrics['spec'][K][0].append(tmp_spec[max_Sw_pos])
+    metrics['MCC'][K].append(tmp_MCC[max_MCC_pos])
+    metrics['sens'][K][1].append(tmp_sens[max_MCC_pos])
+    metrics['spec'][K][1].append(tmp_spec[max_MCC_pos])
+    metrics['thresh'][K][0].append(max_Sw_thresh)
+    metrics['thresh'][K][1].append(max_MCC_thresh)
+    if np.max(metrics['AUC'][K]) != tmp_AUC:
+        print(jack.bcolors.RED+name+' AUC has not increased (%f from epoch %i)'%(np.max(metrics['AUC'][K]),np.argmax(metrics['AUC'][K])+1)+jack.bcolors.RESET)
+    else:
+        print(jack.bcolors.GREEN+name+' AUC increased!'+jack.bcolors.RESET)
+    return metrics
+
 
 def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experiment,num_outputs,num_1D_feats,fpath):
     ph_x = tf.placeholder(tf.float32,[None,None,num_1D_feats],name='oneD_feats')
@@ -188,35 +217,17 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
         batch_size = args.batch_size
         np.random.shuffle(train_ids)
         train_bool = True
-        train_AUC_save = []
-        val_AUC_save = []
-        test_AUC_save = [[] for i in test_ids]
-        train_cost_save = []
-        val_cost_save = []
-        test_cost_save = [[] for i in test_ids]
-        train_Sw_save = []
-        val_Sw_save = []
-        test_Sw_save = [[] for i in test_ids]
-        train_MCC_save = []
-        val_MCC_save = []
-        test_MCC_save = [[] for i in test_ids]
-        train_Q2_save = []
-        val_Q2_save = []
-        test_Q2_save = [[] for i in test_ids]
-        train_sens_save = []
-        val_sens_save = []
-        test_sens_save = [[] for i in test_ids]
-        train_spec_save = []
-        val_spec_save = []
-        test_spec_save = [[] for i in test_ids]
+        train_save = {'AUC':[[] for i in range(1)],'cost':[[] for i in range(1)],'Sw':[[] for i in range(1)],'MCC':[[] for i in range(1)],'sens':[[[],[]] for i in range(1)],'spec':[[[],[]] for i in range(1)],'thresh':[[[],[]] for i in range(1)]}
+        val_save = {'AUC':[[] for i in range(1)],'cost':[[] for i in range(1)],'Sw':[[] for i in range(1)],'MCC':[[] for i in range(1)],'sens':[[[],[]] for i in range(1)],'spec':[[[],[]] for i in range(1)],'thresh':[[[],[]] for i in range(1)]}
+        test_save = {'AUC':[[] for i in test_ids],'cost':[[] for i in test_ids],'Sw':[[] for i in test_ids],'MCC':[[] for i in test_ids],'sens':[[[],[]] for i in test_ids],'spec':[[[],[]] for i in test_ids],'thresh':[[[],[]] for i in test_ids]}
 
-        test_thresh_save = [[] for i in test_ids]
         e=1
         step = 0.001
         thresholds = np.arange(0,1+step,step)[None,:]
         while train_bool == True:
+            #---------------------TRAINING-------------------------------------#
             train_cost = 0
-            print(jack.bcolors.CYAN+'Training epoch %i:'%(e)+jack.bcolors.RESET)
+            print(jack.bcolors.CYAN+'--------------------------Training epoch %i:--------------------------'%(e)+jack.bcolors.RESET)
             for i in tqdm.tqdm(range(int(np.ceil(len(train_ids)/float(batch_size)))),file=sys.stdout):
                 train_data,train_labels,mask,seq_lens = get_data(feat_dic,train_ids,batch_size,i,norm_mu,norm_std)
                 if experiment == 'PRO':
@@ -229,93 +240,33 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
                 [_,tmp_cost,_] = sess.run([opt,cost,model],feed_dict=feed_dict)
                 train_cost += np.sum(tmp_cost)
             print('Training cost = %f'%(train_cost))
-
+            #----------------------TESTING-------------------------------------#
             print('Testing on train set...')
-            train_cost,train_AUC,train_Sw,train_MCC,train_Q2,train_sens,train_spec = test_func(sess,train_ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment)
-            print('Train AUC = %f'%(train_AUC))
-            max_Sw_pos = np.argmax(train_Sw)
-            max_Sw = train_Sw[max_Sw_pos]
-            max_thresh = thresholds[0,max_Sw_pos]
-            max_MCC = train_MCC[max_Sw_pos]
-            max_Q2 = train_Q2[max_Sw_pos]
-            print('Train max Sw = %f, at a threshold of %f'%(max_Sw,max_thresh))
-            print('Max MCC at that threshold = %f'%(max_MCC))
-            print('Max Q2 at that threshold = %f'%(max_Q2))
-            train_AUC_save.append(train_AUC)
-            train_cost_save.append(train_cost)
-            train_Sw_save.append(train_Sw[max_Sw_pos])
-            train_MCC_save.append(train_MCC[max_Sw_pos])
-            train_sens_save.append(train_sens[max_Sw_pos])
-            train_spec_save.append(train_spec[max_Sw_pos])
-            train_Q2_save.append(train_Q2[max_Sw_pos])
-            if np.max(train_AUC_save) != train_AUC:
-                print(jack.bcolors.RED+'Train AUC has not increased (%f from epoch %i)'%(np.max(train_AUC_save),np.argmax(train_AUC_save)+1)+jack.bcolors.RESET)
-            else:
-                print(jack.bcolors.GREEN+'Train AUC increased!'+jack.bcolors.RESET)
+            train_save = test_iter(sess,train_ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,train_save,K=0,name='Train')
 
             print('Validating...')
-            val_cost,val_AUC,val_Sw,val_MCC,val_Q2,val_sens,val_spec = test_func(sess,val_ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment)
-            print('Validation AUC = %f'%(val_AUC))
-            max_Sw_pos = np.argmax(val_Sw)
-            max_Sw = val_Sw[max_Sw_pos]
-            max_thresh = thresholds[0,max_Sw_pos]
-            max_MCC = val_MCC[max_Sw_pos]
-            max_Q2 = val_Q2[max_Sw_pos]
-            print('Validation max Sw = %f, at a threshold of %f'%(max_Sw,max_thresh))
-            print('Max MCC at that threshold = %f'%(max_MCC))
-            print('Max Q2 at that threshold = %f'%(max_Q2))
-            val_AUC_save.append(val_AUC)
-            val_cost_save.append(val_cost)
-            val_Sw_save.append(val_Sw[max_Sw_pos])
-            val_MCC_save.append(val_MCC[max_Sw_pos])
-            val_sens_save.append(val_sens[max_Sw_pos])
-            val_spec_save.append(val_spec[max_Sw_pos])
-            val_Q2_save.append(val_Q2[max_Sw_pos])
-            if np.max(val_AUC_save) != val_AUC:
-                print(jack.bcolors.RED+'Validation AUC has not increased (%f from epoch %i)'%(np.max(val_AUC_save),np.argmax(val_AUC_save)+1)+jack.bcolors.RESET)
-            else:
-                print(jack.bcolors.GREEN+'Validation AUC increased!'+jack.bcolors.RESET)
-                if args.save == True:
-                    print(jack.bcolors.GREEN+'Saving in '+fpath+'/model_'+experiment+'.net'+jack.bcolors.RESET)
-                    saver.save(sess, fpath+'/model_'+experiment+'.net')
-            max_val_epoch = np.argmax(val_AUC_save)
+            val_save = test_iter(sess,val_ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,val_save,K=0,name='Validation')
+            max_val_epoch = np.argmax(val_save['AUC'])
+            if max_val_epoch+1 == e:
+                print('Saving model in:'+str(fpath))
+                saver.save(sess,fpath)
 
 
             for K,k in enumerate(test_ids):
-                print(jack.bcolors.BOLD+'Test set '+str(K)+jack.bcolors.RESET)
-                test_cost,test_AUC,test_Sw,test_MCC,test_Q2,test_sens,test_spec = test_func(sess,k,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment)
-                print('Test AUC = %f'%(test_AUC))
-                max_Sw_pos = np.argmax(test_Sw)
-                max_Sw = test_Sw[max_Sw_pos]
-                max_thresh = thresholds[0,max_Sw_pos]
-                max_MCC = test_MCC[max_Sw_pos]
-                max_Q2 = test_Q2[max_Sw_pos]
-                print('Test max Sw = %f, at a threshold of %f'%(max_Sw,max_thresh))
-                print('Max MCC at that threshold = %f'%(max_MCC))
-                print('Max Q2 at that threshold = %f'%(max_Q2))
-                test_AUC_save[K].append(test_AUC)
-                test_cost_save[K].append(test_cost)
-                test_Sw_save[K].append(test_Sw[max_Sw_pos])
-                test_MCC_save[K].append(test_MCC[max_Sw_pos])
-                test_Q2_save[K].append(test_Q2[max_Sw_pos])
-                test_sens_save[K].append(test_sens[max_Sw_pos])
-                test_spec_save[K].append(test_spec[max_Sw_pos])
-                test_thresh_save[K].append(max_thresh)
-                if np.max(test_AUC_save[K]) != test_AUC:
-                    print(jack.bcolors.RED+'Test AUC has not increased (%f from epoch %i)'%(np.max(test_AUC_save[K]),np.argmax(test_AUC_save[K])+1)+jack.bcolors.RESET)
-                else:
-                    print(jack.bcolors.GREEN+'Test AUC increased!'+jack.bcolors.RESET)
+                test_save = test_iter(sess,k,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,test_save,K=K,name='Test '+str(K))
 
                 print('Best validation epoch results on test data:')
-                print('Epoch:\tAUC:\tT:\tSw(T):\tQ2(T):\tMCC(T):\tSens(T):\tSpec(T):')
-                print('%i\t%1.4f\t%1.3f\t%1.4f\t%1.4f\t%1.4f\t%1.4f\t\t%1.4f'%(max_val_epoch+1,test_AUC_save[K][max_val_epoch],test_thresh_save[K][max_val_epoch],test_Sw_save[K][max_val_epoch],test_Q2_save[K][max_val_epoch],test_MCC_save[K][max_val_epoch],test_sens_save[K][max_val_epoch],test_spec_save[K][max_val_epoch]))
+                print('Epoch:\tAUC:\tT:\tSw(T):\tSe(T):\tSp(T):\tT:\tMCC(T):\tSe(T):\tSp(T):')
+                
+                print('%i\t%1.4f\t%1.3f\t%1.4f\t%1.4f\t%1.4f\t%1.3f\t%1.4f\t%1.4f\t%1.4f'%(max_val_epoch+1,test_save['AUC'][K][max_val_epoch],test_save['thresh'][K][0][max_val_epoch],test_save['Sw'][K][max_val_epoch],test_save['sens'][K][0][max_val_epoch],test_save['spec'][K][0][max_val_epoch],test_save['thresh'][K][1][max_val_epoch],test_save['MCC'][K][max_val_epoch],test_save['sens'][K][1][max_val_epoch],test_save['spec'][K][1][max_val_epoch]))
 
             if max_val_epoch < e-5:
                 print('Stopping training')
                 train_bool = False
             e+=1
+            #---------------------STOP-----------------------------------------#
     tf.reset_default_graph()
-    return [[max_val_epoch+1,test_AUC_save[K][max_val_epoch],test_thresh_save[K][max_val_epoch],test_Sw_save[K][max_val_epoch],test_Q2_save[K][max_val_epoch],test_MCC_save[K][max_val_epoch],test_sens_save[K][max_val_epoch],test_spec_save[K][max_val_epoch]] for K,k in enumerate(test_ids)]
+    return [[max_val_epoch+1,test_save['AUC'][K][max_val_epoch],test_save['thresh'][K][0][max_val_epoch],test_save['Sw'][K][max_val_epoch],test_save['sens'][K][0][max_val_epoch],test_save['spec'][K][0][max_val_epoch],test_save['thresh'][K][1][max_val_epoch],test_save['MCC'][K][max_val_epoch],test_save['sens'][K][1][max_val_epoch],test_save['spec'][K][1][max_val_epoch]] for K,k in enumerate(test_ids)]
     
 pc_name = os.uname()[1]        
 data_dir = 'Protein/' if pc_name == 'JackPC' else ''
@@ -356,14 +307,15 @@ for I,i in enumerate(tqdm.tqdm(all_ids,file=sys.stdout)):
     if i in bad_prots:
         continue
     #---------------------------------------------------------------------------
-    if i in old_train_ids or i in old_test_ids:
+    if i in old_train_ids:
         old_ids = old_train_ids if i in old_train_ids else old_test_ids
         old_db = old_train if i in old_train_ids else old_test
         index = old_ids.index(i)
         seq = old_db['aa'][index]
         feat_dic[i] = [seq]
-        feats = np.concatenate([old_db[j][index].astype(float) if j!='spd33' else jack.read_spd33_features(wtf_rhys+'/class/'+i+'.spd3',wtf_rhys+'/reg/'+i+'.spd3',seq) for j in features],1)
+        feats = np.concatenate([old_db[j][index].astype(float) if j!='spd33' else jack.read_spd33_third_iteration(wtf_rhys+'/combined/'+i+'.spd33',seq) for j in features],1)
         feats[np.isinf(feats)] = 9999 #only HHM, surely...?
+        feats[feats>9999] = 9999
         feat_dic[i].append(feats)
         omega_raw = old_db['omega_raw'][index]
     #---------------------------------------------------------------------------
@@ -378,6 +330,7 @@ for I,i in enumerate(tqdm.tqdm(all_ids,file=sys.stdout)):
                     feat = jack.read_pssm(database_dir+i+'/'+i+'.pssm',seq)
                 elif j=='HHMprob':
                     feat = jack.read_hhm(database_dir+i+'/'+i+'.hhm',seq)
+                    feat[feat>9999] = 9999
                 elif j=='phys':
                     feat = jack.read_pccp('',seq,pccp_dic)
                 elif j=='spd33':
@@ -457,13 +410,13 @@ print(jack.bcolors.BOLD+'\n\nFINAL RESULTS:\n'+jack.bcolors.RESET)
 for K,k in enumerate([test_ids,e01_ids]):
     jack.tee(fpath+'/results_log.txt','python %s\n'%(' '.join(sys.argv)),append=True)
     jack.tee(fpath+'/results_log.txt','All residues:\n',append=True)
-    jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.3f\t%f\t%f\t%f\t%f\t%f\n'%tuple(all_res[K]),append=True)
+    jack.tee(fpath+'/results_log.txt','%i\t%1.4f\t%1.3f\t%1.4f\t%1.4f\t%1.4f\t%1.3f\t%1.4f\t%1.4f\t%1.4f\n'%tuple(all_res[K]),append=True)
     jack.tee(fpath+'/results_log.txt','Only Proline:\n',append=True)
-    jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.3f\t%f\t%f\t%f\t%f\t%f\n'%tuple(pro_res[K]),append=True)
+    jack.tee(fpath+'/results_log.txt','%i\t%1.4f\t%1.3f\t%1.4f\t%1.4f\t%1.4f\t%1.3f\t%1.4f\t%1.4f\t%1.4f\n'%tuple(pro_res[K]),append=True)
 #jack.tee(fpath+'/results_log.txt','No Proline:',append=True)
 #jack.tee(fpath+'/results_log.txt','%i\t%f\t%1.2f\t%f\t%f\t%f'%tuple(nopro_res),append=True)
 for arg in vars(args):
-    jack.tee(fpath+'/args.txt',"%s:\t%s\n"%(arg,getattr(args,arg)),append=(I!=0))
+    jack.tee(fpath+'/args.txt',"%s:\t%s\n"%(arg,getattr(args,arg)),append=True)
 
 sys.stderr.write('Finished training model in '+fpath)
 
