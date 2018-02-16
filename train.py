@@ -277,8 +277,7 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
                 print(jack.bcolors.GREEN+'Validation AUC increased!'+jack.bcolors.RESET)
                 if args.save == True:
                     print(jack.bcolors.GREEN+'Saving in '+fpath+'/model_'+experiment+'.net'+jack.bcolors.RESET)
-                    if args.save == True:
-                        saver.save(sess, fpath+'/model_'+experiment+'.net')
+                    saver.save(sess, fpath+'/model_'+experiment+'.net')
             max_val_epoch = np.argmax(val_AUC_save)
 
 
