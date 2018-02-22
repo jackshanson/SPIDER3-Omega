@@ -97,7 +97,7 @@ def read_spd33_features(fnameclass,fnamereg,seq):
         raise ValueError('Spider3 file is in wrong format or incorrect!')
     return spd3_features
 
-def tee(fname,in_str,append=False):
+def tee(fname,in_str,append=True):
     fperm = 'a' if append==True else 'w'
     with open(fname,fperm) as f:
         print(in_str),  
@@ -141,6 +141,12 @@ def sensitivity(tp,tn,fp,fn):
 
 def specificity(tp,tn,fp,fn):
     return tn/(tn+fp).astype(float)
+
+def precision(tp,tn,fp,fn):
+    return tp/(tp+fp).astype(float)
+
+def accuracy(tp,tn,fp,fn):
+    return (tp+tn)/(tp+tn+fn+fp).astype(float)
 
 def AUC(sens,spec):
     return np.trapz(sens,spec)
