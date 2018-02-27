@@ -119,6 +119,9 @@ def read_omega_file(fname):
 def sigmoid(x):
     return 1/(1+np.exp(-x))
 
+def softmax(x,axis=1):
+    return np.exp(x)/(np.sum(np.exp(x),1)[:,None])
+
 def LSTM_layer(input,cell,cell_args,cellsize,seq_lens,time_major):
     cells = [cell(cellsize,**cell_args),cell(cellsize,**cell_args)]
     (fw,bw),_ = tf.nn.bidirectional_dynamic_rnn(cells[0],cells[1],input,sequence_length=seq_lens,dtype=tf.float32,swap_memory=True,time_major=time_major)
@@ -143,7 +146,8 @@ def specificity(tp,tn,fp,fn):
     return tn/(tn+fp).astype(float)
 
 def precision(tp,tn,fp,fn):
-    return tp/(tp+fp).astype(float)
+    with np.errstate(invalid='ignore'):
+        return tp/(tp+fp).astype(float)
 
 def accuracy(tp,tn,fp,fn):
     return (tp+tn)/(tp+tn+fn+fp).astype(float)
@@ -156,4 +160,4 @@ def Sw(tp,tn,fp,fn):
 
 def MCC(tp,tn,fp,fn):
     with np.errstate(invalid='ignore'):
-        return ((tp*tn)-(fp*fn))/np.sqrt((tp+fp)*(tp+fn)*(tn+fn)*(tn+fp))
+        return ((tp*tn)-(fp*fn))/np.sqrt((tp+fp)*(tp+fn)*(tn+fn)*(tn+fp).astype(np.float64))

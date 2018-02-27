@@ -4,13 +4,14 @@ import cPickle as pickle
 import argparse
 import pandas as pd
 import jack_misc as jack
+import subprocess
 parser = argparse.ArgumentParser()
 parser.add_argument('--small', default=False, type=bool, help='Whether or not to run a small train and val set (True or false)')
 parser.add_argument('--gpu', default=0, type=int, help='Which GPU to use on the machine')
 parser.add_argument('--type', default='ALL', type=str, help='Type of test to run ("ALL","PRO","NOPRO"')
 parser.add_argument('--model_res', default=True, type=bool, help='If model is residual or not')
 parser.add_argument('--layout', default="CNN", type=str, help='RNN, CNN, or "CNN RNN" etc')
-parser.add_argument('--gain', default=100, type=float, help='Loss scaling factor')
+parser.add_argument('--gain', default=50, type=int, help='Loss scaling factor')
 parser.add_argument('--RNN_size', default=128, type=int, help='Size of the RNN layer')
 parser.add_argument('--CNN_size', default=64, type=int, help='Size of the CNN layer')
 parser.add_argument('--RNN_depth', default=2, type=int, help='Number of RNN layers')
@@ -27,6 +28,7 @@ parser.add_argument('--bn_momentum', default=0.99, type=float, help='Batch norm 
 parser.add_argument('--omit_feature',default='', type=str, help="'pssm','HHMprob','phys','spd33'")
 args = parser.parse_args()
 AA = 'GALMFWKQESPVICYHRNDT'
+args.gain = float(args.gain)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 os.environ["CUDA_VISIBLE_DEVICES"]= str(args.gpu)
 import tensorflow as tf
@@ -129,11 +131,16 @@ def get_data(feat_dic,ids,batch_size,i,norm_mu,norm_std):
     data = [(feat_dic[j][1]-norm_mu)/norm_std for j in ids[i*batch_size:np.min([(i+1)*batch_size,len(ids)])]]
     seq_lens = [j.shape[0] for j in data]
     max_seq_len = np.max(seq_lens)
+    seqs = np.concatenate([np.concatenate([feat_dic[j][0][:,None],np.full([max_seq_len-feat_dic[j][0].shape[0],1],'X')])[None,:,:] for j in ids[i*batch_size:np.min([(i+1)*batch_size,len(ids)])]])
     data = np.concatenate([np.concatenate([j,np.zeros([max_seq_len-j.shape[0],j.shape[1]])])[None,:,:] for j in data])
     labels = [feat_dic[j][2] for j in ids[i*batch_size:np.min([(i+1)*batch_size,len(ids)])]]
     labels = np.concatenate([np.concatenate([j,-1*np.ones([max_seq_len-j.shape[0],j.shape[1]])])[None,:,:] for j in labels])
+    labels_three = np.zeros([labels.shape[0],labels.shape[1],3])
+    labels_three[:,:,0:1][labels==0] = 1 
+    labels_three[:,:,1:2][np.logical_and(labels==1,seqs=='P')] = 1 
+    labels_three[:,:,2:][np.logical_and(labels==1,seqs!='P')] = 1 
     mask = (labels>-1)[:,:,0]
-    return data,labels,mask,seq_lens
+    return data,labels_three,mask,seq_lens
 
 def test_func(sess,ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment):
     running_cost = 0
@@ -154,16 +161,19 @@ def test_func(sess,ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,threshold
         feed_dict = {'oneD_feats:0':data,'seq_lens:0':seq_lens,'ph_dropout:0':1,'mask_bool:0':mask,'output:0':labels,'train_bool:0':False}
         [tmp_cost,tmp_out] = sess.run([cost,model],feed_dict=feed_dict)
         running_cost += np.sum(tmp_cost)
-        outputs = jack.sigmoid(tmp_out[-1])
+        outputs = jack.softmax(tmp_out[-1])
         inds = np.cumsum([0]+list(mask.sum(1)))
         outputs_save += [outputs[inds[j]:inds[j+1]] for j in range(len(seq_lens))]
-        reshaped_labels = labels[mask==True]
-        labels_save += [reshaped_labels[inds[j]:inds[j+1]] for j in range(len(seq_lens))]
-        threshed_outputs = outputs>=thresholds
-        tp += np.sum(np.logical_and(threshed_outputs,reshaped_labels),0)
-        tn += np.sum(np.logical_and(np.logical_not(threshed_outputs),np.logical_not(reshaped_labels)),0)
-        fp += np.sum(np.logical_and(threshed_outputs,np.logical_not(reshaped_labels)),0)
-        fn += np.sum(np.logical_and(np.logical_not(threshed_outputs),reshaped_labels),0)
+        labels_save += [labels[mask==True][inds[j]:inds[j+1]] for j in range(len(seq_lens))]
+        reshaped_labels_binary = np.sum(labels[mask==True][:,1:],1)[:,None]
+        if np.sum(reshaped_labels_binary[reshaped_labels_binary>1]) > 0:
+            raise ValueError('Fucked up')
+        outputs_binary = np.sum(outputs[:,1:],1)[:,None]
+        threshed_outputs = outputs_binary>=thresholds
+        tp += np.sum(np.logical_and(threshed_outputs,reshaped_labels_binary),0)
+        tn += np.sum(np.logical_and(np.logical_not(threshed_outputs),np.logical_not(reshaped_labels_binary)),0)
+        fp += np.sum(np.logical_and(threshed_outputs,np.logical_not(reshaped_labels_binary)),0)
+        fn += np.sum(np.logical_and(np.logical_not(threshed_outputs),reshaped_labels_binary),0)
     sens = tp/(tp+fn).astype(float)
     spec = tn/(tn+fp).astype(float)
     AUC = np.trapz(sens,spec)
@@ -179,16 +189,10 @@ def test_iter(sess,ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,threshold
     print(jack.bcolors.BOLD+name+' set:'+jack.bcolors.RESET)
     tmp_cost,tmp_AUC,tmp_Sw,tmp_MCC,tmp_Q2,tmp_sens,tmp_spec,tmp_prec,tmp_outputs = test_func(sess,ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment)
     print(name+' AUC = %f'%(tmp_AUC))
-    try:
-        max_Sw_pos = np.argmax(tmp_Sw)
-    except:
-        max_Sw_pos = 0
+    max_Sw_pos = np.argmax(tmp_Sw)
     max_Sw = tmp_Sw[max_Sw_pos]
     max_Sw_thresh = thresholds[0,max_Sw_pos]
-    try:
-        max_MCC_pos = np.nanargmax(tmp_MCC)
-    except:
-        max_MCC_pos = 0
+    max_MCC_pos = np.nanargmax(tmp_MCC)
     max_MCC = tmp_MCC[max_MCC_pos]
     max_MCC_thresh = thresholds[0,max_MCC_pos]
     print(name+' max Sw = %f, at a threshold of %f'%(max_Sw,max_Sw_thresh))
@@ -220,8 +224,15 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
     ph_mask = tf.placeholder(tf.bool,[None,None], name='mask_bool')
     ph_y = tf.placeholder(tf.float32,[None,None,num_outputs],name='output')
     ph_train_bool = tf.placeholder(tf.bool,name='train_bool')
+    ph_weight_outputs = tf.constant([1.,20.*20.,1000.],dtype=tf.float32,name='weight_scale') #proline is more common, but only for proline! 300x for rarity of proline AA
     model = Model(ph_x,ph_seq_lens,ph_mask,ph_dropout,num_outputs,ph_train_bool,args)
-    cost = tf.reduce_mean(tf.nn.weighted_cross_entropy_with_logits(tf.boolean_mask(ph_y,ph_mask),model[-1],args.gain))
+    #cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=tf.multiply(tf.boolean_mask(ph_y,ph_mask),ph_weight_outputs),logits=tf.multiply(model[-1],ph_weight_outputs)),0)
+    masked_labels = tf.boolean_mask(ph_y,ph_mask)
+    error = tf.nn.softmax_cross_entropy_with_logits(labels=masked_labels,logits=model[-1])
+    #cost = tf.reduce_mean(error+tf.multiply(error,tf.cast(tf.greater_equal(tf.argmax(masked_labels,1),1),tf.float32)*ph_weight_outputs))
+    cost = tf.reduce_mean(tf.multiply(tf.gather(ph_weight_outputs,tf.argmax(masked_labels,1)),error))
+    
+    #cost = tf.reduce_mean(tf.nn.weighted_cross_entropy_with_logits(tf.boolean_mask(ph_y,ph_mask),model[-1],args.gain))
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(update_ops):
         opt = tf.contrib.layers.optimize_loss(cost, None,0.01,optimizer='Adam')
@@ -234,9 +245,13 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
     config.gpu_options.allow_growth = True
     config.allow_soft_placement=True
     config.log_device_placement=False
+    global output_dic
     output_dic = {}
-    max_bad_epochs = 5 if 'RNN' not in args.layout else 2
+    max_bad_epochs = 3 if 'RNN' not in args.layout else 2
     with tf.Session(config=config) as sess:
+        print('Class weights: ')
+        print(ph_weight_outputs.eval())
+        args.gain = ph_weight_outputs.eval()
         sess.run(init)
         batch_size = args.batch_size
         np.random.shuffle(train_ids)
@@ -306,6 +321,10 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
                 train_bool = False 
             e+=1
             #---------------------STOP-----------------------------------------#
+    with open(fpath+'/test_outputs.p','w') as f:
+        pickle.dump(output_dic,f)
+    with open(fpath+'/test_metrics.p','w') as f:
+        pickle.dump(test_save,f)
     tf.reset_default_graph()
     return test_save,output_dic
 
@@ -435,7 +454,7 @@ norm_mu = np.mean(all_train_data,0)
 norm_std = np.std(all_train_data,0)
 
 num_1D_feats = all_train_data.shape[1]
-num_outputs = 1
+num_outputs = 3
 fpath = ''
 
 exists_flag = True
@@ -447,7 +466,7 @@ while exists_flag:
 if args.save == True:
     os.makedirs(fpath)
 
-experiments = ['ALL','PRO']
+experiments = ['ALL']
 all_outputs = {}
 all_metrics = {}
 all_outputs['cmd'] = 'python '+' '.join(sys.argv)
@@ -472,13 +491,12 @@ exists_flag = True
 model_id = -1
 while exists_flag:
     model_id += 1
-    fpath = "save_files/model_"+str(model_id)
+    fpath2 = "save_files_three/model_"+str(model_id)
     exists_flag = os.path.isdir(fpath2)
-if args.save == True:
+if args.save == True and args.small == False:
     os.makedirs(fpath2)
-    shutil.move(fpath,fpath2) #move from the tmp file to the new file
-
-sys.stderr.write('\npython '+' '.join(sys.argv)+' finished training in '+fpath+'!\n')
+    res = subprocess.call("cp -R "+fpath+'/* '+fpath2+'/',shell=True)
+sys.stderr.write('\npython '+' '.join(sys.argv)+' finished training in '+fpath2+'!\n')
 
 '''
 list_ids = [train_ids,val_ids,test_ids]

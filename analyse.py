@@ -62,7 +62,7 @@ spec = [[[] for _ in name_datasets ] for _ in experiments]
 step = 0.001
 thresholds = np.arange(0,1+step,step)[None,:]
 bad_data = []
-
+'''
 thresh_max_MCC = []
 for I,i in enumerate(dir_list):  
     print(jack.bcolors.CYAN+'Data source: %s'%(i)+jack.bcolors.RESET)
@@ -105,9 +105,10 @@ for I,i in enumerate(dir_list):
 
 sio.savemat('./evaluation/AUC_plots.mat',{'sensitivity':sens,'specificity':spec,'ids':dir_list})
 '''
+'''
 dataset_ind = name_datasets.index('Test')
 experiment_ind = experiments.index('ALL')
-plt.plot(1-np.array(spec[experiment_ind][dataset_ind]).T,np.array(sens[experiment_ind][dataset_ind]).T)
+plt.plot(1-np.array(spec[experiment_ind][dataset_ind]).T,np.array(sens[experiment_ind][dataset_ind]).T)'''
 '''
 sens_AA = [[] for _ in name_datasets]
 spec_AA = [[] for _ in name_datasets]
@@ -116,6 +117,7 @@ prec_AA = [[] for _ in name_datasets]
 #----------------------------------Per AA analysis------------------------------
 key = data.keys()[0]
 count_AA = np.zeros([len(AA_names),len(name_datasets)])
+count_AA_t = np.zeros([len(AA_names),len(name_datasets)])
 for K,k in enumerate(name_datasets):
     for J,j in enumerate(dataset_ids[K]):
         try:
@@ -123,8 +125,13 @@ for K,k in enumerate(name_datasets):
         except:
             continue
         count_AA[:,K] += np.array([np.sum(np.logical_and(seq==m, data[key]['ALL'][j]['labels'][data[key]['ALL'][j]['labels'][:,0]!=-1].squeeze()==1)) for m in AA_names])
+        count_AA_t[:,K] += np.array([np.sum(np.logical_and(seq==m, data[key]['ALL'][j]['labels'][data[key]['ALL'][j]['labels'][:,0]!=-1].squeeze()==0)) for m in AA_names])
         
-
+print('AA &\t Cis/Trans & \t'+'&\t'.join(AA_names) +'\\\\ \hline')
+for K,k in enumerate(name_datasets[:-1]):
+    print(k+'&\t'+'C &\t'+'%i &\t'*len(AA_names)%tuple(count_AA[:,K])+'\\\\')
+    print(k+'&\t'+'T &\t'+'%i &\t'*len(AA_names)%tuple(count_AA_t[:,K])+'\\\\')
+    
 
 print('Residue Analysis:'+jack.bcolors.RESET)
 for I,i in enumerate(dir_list):  
@@ -219,7 +226,7 @@ for I,i in enumerate(dir_list):
 sio.savemat('./evaluation/per_neff.mat',{'MCC_Neff':MCC_neff,'ids':dir_list})
 
 
-
+'''
 #----------------------------------Excel plotting-------------------------------
 metrics = {}
 for I,i in enumerate(dir_list):
@@ -245,7 +252,7 @@ thresh_max_MCC = []
 thresh_max_Sw = []
 for M,m in enumerate(experiments):
     for I,i in enumerate(name_datasets[:2]):  
-        jack.tee('evaluation/text_results.txt','Cmd:\tSaveDir:\tAUC:\tSw:\tthresh:\tsens:\tspec:\tprec:\tQ2:\tMCC:\tMCC:\tthresh:\tsens:\tspec:\tprec:\tQ2:\tSw\t'),
+        jack.tee('evaluation/text_results.txt','Cmd:\tSaveDir:\tAUC:\tthresh:\tSw:\tsens:\tspec:\tprec:\tQ2:\tMCC:\tthresh:\tMCC:\tsens:\tspec:\tprec:\tQ2:\tSw\t'),
     jack.tee('evaluation/text_results.txt','\n')
     for I,i in enumerate(dir_list):  
         for K,k in enumerate(name_datasets[:2]):  
@@ -265,32 +272,26 @@ for M,m in enumerate(experiments):
                 tn += np.sum(np.logical_and(np.logical_not(threshed_results),np.logical_not(labels)),0)
                 fp += np.sum(np.logical_and(threshed_results,np.logical_not(labels)),0)
                 fn += np.sum(np.logical_and(np.logical_not(threshed_results),labels),0) 
-            if count > 0:
-                sens=jack.sensitivity(tp,tn,fp,fn)
-                spec=jack.specificity(tp,tn,fp,fn)
-                AUC = np.trapz(sens,spec)
-                MCC = jack.MCC(tp,tn,fp,fn)
-                Sw = jack.Sw(tp,tn,fp,fn)
-                prec = jack.precision(tp,tn,fp,fn)
-                #Q2 = jack.accuracy(tp,fn,fp,fn)
-                Q2 = np.zeros(prec.shape)
-                if k=='Validation':
-                    thresh_max_MCC.append(np.nanargmax(MCC))
-                    thresh_max_Sw.append(np.nanargmax(Sw))
-                Tsw = thresh_max_Sw[M*len(dir_list)+I]
-                Tmcc = thresh_max_MCC[M*len(dir_list)+I]
-                order = [metrics[i]['cmd'], i, AUC,
-                         Tsw*step, Sw[Tsw], sens[Tsw],spec[Tsw],prec[Tsw],Q2[Tsw],MCC[Tsw],
-                         Tmcc*step, MCC[Tmcc], sens[Tmcc],spec[Tmcc],prec[Tmcc],Q2[Tmcc],Sw[Tsw]]
-                frmt = ['%s','%s','%1.4f',
-                        '%1.3f','%1.4f','%1.4f','%1.4f','%1.4f','%1.4f','%1.4f',
-                        '%1.3f','%1.4f','%1.4f','%1.4f','%1.4f','%1.4f','%1.4f']
-                jack.tee('evaluation/text_results.txt','\t'.join(frmt)%(tuple(order))+'\t'),
+            sens=jack.sensitivity(tp,tn,fp,fn)
+            spec=jack.specificity(tp,tn,fp,fn)
+            AUC = np.trapz(sens,spec)
+            MCC = jack.MCC(tp,tn,fp,fn)
+            Sw = jack.Sw(tp,tn,fp,fn)
+            prec = jack.precision(tp,tn,fp,fn)
+            Q2 = jack.accuracy(tp,tn,fp,fn)
+            if k=='Validation':
+                thresh_max_MCC.append(np.nanargmax(MCC))
+                thresh_max_Sw.append(np.nanargmax(Sw))
+            Tsw = thresh_max_Sw[M*len(dir_list)+I]
+            Tmcc = thresh_max_MCC[M*len(dir_list)+I]
+            order = [metrics[i]['cmd'], i, AUC,
+                     Tsw*step, Sw[Tsw], sens[Tsw],spec[Tsw],prec[Tsw],Q2[Tsw],MCC[Tsw],
+                     Tmcc*step, MCC[Tmcc], sens[Tmcc],spec[Tmcc],prec[Tmcc],Q2[Tmcc],Sw[Tmcc]]
+            frmt = ['%s','%s','%1.4f',
+                    '%1.3f','%1.4f','%1.4f','%1.4f','%1.4f','%1.4f','%1.4f',
+                    '%1.3f','%1.4f','%1.4f','%1.4f','%1.4f','%1.4f','%1.4f']
+            jack.tee('evaluation/text_results.txt','\t'.join(frmt)%(tuple(order))+'\t'),
     
-                
-            else:
-                print("%s has nothing good for dataset %s"%(i,k))
-                bad_data.append([i,k])
         jack.tee('evaluation/text_results.txt','\n')
 
 
