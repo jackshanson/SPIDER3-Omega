@@ -1,10 +1,12 @@
 import scipy.io as sio
-import os,tqdm,sys,copy
+import os,tqdm,sys,copy,time
 import cPickle as pickle
 import argparse
 import pandas as pd
 import jack_misc as jack
 import subprocess
+import warnings
+warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser()
 parser.add_argument('--small', default=False, type=bool, help='Whether or not to run a small train and val set (True or false)')
 parser.add_argument('--gpu', default=0, type=int, help='Which GPU to use on the machine')
@@ -36,7 +38,8 @@ import numpy as np
 import matplotlib,os
 matplotlib.use('Agg') # Must be before importing matplotlib.pyplot or pylab!
 import matplotlib.pyplot as plt
-
+starttime = time.time()
+sys.stderr.write('\npython '+' '.join(sys.argv)+' started training!\n')
 
 
 def plot_func(list1,list2,list3,legend=['Train','Val','Test']):
@@ -224,7 +227,7 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
     ph_mask = tf.placeholder(tf.bool,[None,None], name='mask_bool')
     ph_y = tf.placeholder(tf.float32,[None,None,num_outputs],name='output')
     ph_train_bool = tf.placeholder(tf.bool,name='train_bool')
-    ph_weight_outputs = tf.constant([1.,20.*20.,1000.],dtype=tf.float32,name='weight_scale') #proline is more common, but only for proline! 300x for rarity of proline AA
+    ph_weight_outputs = tf.constant([1.,10.,10.],dtype=tf.float32,name='weight_scale') #proline is more common, but only for proline! 300x for rarity of proline AA
     model = Model(ph_x,ph_seq_lens,ph_mask,ph_dropout,num_outputs,ph_train_bool,args)
     #cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=tf.multiply(tf.boolean_mask(ph_y,ph_mask),ph_weight_outputs),logits=tf.multiply(model[-1],ph_weight_outputs)),0)
     masked_labels = tf.boolean_mask(ph_y,ph_mask)
@@ -289,19 +292,29 @@ def train_func(feat_dic,train_ids,val_ids,test_ids,norm_mu,norm_std,args,experim
                 train_cost += np.sum(tmp_cost)
             print('Training cost = %f'%(train_cost))
             #----------------------TESTING-------------------------------------#
-            print('Testing on train set...')
-            train_save,_ = test_iter(sess,train_ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,train_save,K=0,name='Train')
+            #print('Testing on train set...')
+            #train_save,_ = test_iter(sess,train_ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,train_save,K=0,name='Train')
 
             print('Validating...')
-            val_save, _ = test_iter(sess,val_ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,val_save,K=0,name='Validation')
+            val_save, val_outputs = test_iter(sess,val_ids,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,val_save,K=0,name='Validation')
             max_val_epoch = np.argmax(val_save['AUC'])
+            val_save['V_EP'][0].append(max_val_epoch+1)
             if max_val_epoch+1 == e:
                 print('Saving model in:'+str(fpath)+'/model_'+experiment+'.net')
                 saver.save(sess,fpath+'/model_'+experiment+'.net')
 
             for K,k in enumerate(test_ids):
-                test_save, test_outputs = test_iter(sess,k,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,test_save,K=K,name='Test '+str(K))
-                test_save['V_EP'][K].append(max_val_epoch+1)
+                if val_ids == k:
+                    for z in ANALYSIS_VARIABLES:    
+                        if z not in CHILD_VARIABLES:                               
+                            test_save[z][K].append(val_save[z][K][-1])
+                        else:
+                            for y in range(len(PARENT_VARIABLES)):
+                                test_save[z][K][y].append(val_save[z][K][y][-1])
+                    test_outputs = val_outputs                  
+                else:
+                    test_save, test_outputs = test_iter(sess,k,batch_size,feat_dic,norm_mu,norm_std,cost,model,thresholds,args,experiment,test_save,K=K,name='Test '+str(K))
+                    test_save['V_EP'][K].append(max_val_epoch+1)
                 if max_val_epoch+1 == e:
                     for L,l in enumerate(k):
                         output_dic[l] = {'seq':feat_dic[l][0],'outputs':test_outputs[0][L],'masked_labels':test_outputs[1][L],'labels':feat_dic[l][-1]}
@@ -364,6 +377,8 @@ bad = 0
 bad_prots = []
 features = ['pssm','HHMprob','phys','spd33']
 features = [i for i in features if i != args.omit_feature]
+if args.omit_feature!='':
+    sys.stderr.write('\n Model with features:'+ ' '.join(features)+' started training!\n')
 all_ids = pd.unique(train_ids + test_ids + e01_ids + val_ids)# + old_test_ids)
 
 for I,i in enumerate(tqdm.tqdm(all_ids,file=sys.stdout)):
@@ -493,10 +508,15 @@ while exists_flag:
     model_id += 1
     fpath2 = "save_files_three/model_"+str(model_id)
     exists_flag = os.path.isdir(fpath2)
+
+if args.omit_feature!='':
+    fpath2 = fpath2+'_omit_'+args.omit_feature
 if args.save == True and args.small == False:
     os.makedirs(fpath2)
     res = subprocess.call("cp -R "+fpath+'/* '+fpath2+'/',shell=True)
+endtime = time.time()
 sys.stderr.write('\npython '+' '.join(sys.argv)+' finished training in '+fpath2+'!\n')
+sys.stderr.write('Took '+time.strftime("%H:%M:%S", time.gmtime(endtime-starttime))+'\n')
 
 '''
 list_ids = [train_ids,val_ids,test_ids]
